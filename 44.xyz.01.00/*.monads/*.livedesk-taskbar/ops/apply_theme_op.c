@@ -1,0 +1,126 @@
+/* apply_theme_op.c — real, standalone TPMOS-shaped op (2026-08-16,
+ * Stage 5 §5d.3 step 1 real starter-app proof, khtpm-merge-how2.md).
+ * Was `apply_theme()`, real business logic baked directly inside
+ * khtpm_taskbar_settings_render.c's own render loop — the exact class
+ * of thing Stage 5 needs OUT of every app's renderer before one shared
+ * binary is possible (a shared binary can't call an app-specific
+ * function by name). A real, discrete, one-shot action (read state,
+ * rewrite state, spawn a restart script, exit) — matches
+ * `1.TPMOS_c_+rmmp.0103.0001/projects/fuzz-op/ops/toggle_clock.c`'s
+ * own real shape exactly, so this is a standalone op binary (invoked
+ * via `system()`), NOT a persistent `<module>` (which is for ongoing,
+ * long-running logic — this has none).
+ *
+ * Usage: apply_theme_op <house_root> <bg_hex> <fg_hex>
+ *
+ * Real behavior: writes ONLY the bg/fg COLOR keys into
+ * livedesk_theme.pdl, preserving any other COLOR rows already there,
+ * then appends to #.desktop/livedesk_theme_changed.txt.
+ *
+ * 2026-09-09, direct report ("change of colour in settings is
+ * compiling before changing colour settings, but colour isn't
+ * hardcoded so this isn't necessary"): this used to spawn
+ * `run_khtpm_strip.sh new`, which does a full KHTPM_FORCE_BUILD gcc of
+ * khtpm_core_render.c + a kill/relaunch of the whole taskbar - a
+ * ~30-second rebuild for a data-only change. Every running khtpm
+ * window already polls livedesk_theme_changed.txt every idle tick
+ * (theme_changed_dirty() / hq_idle_tick's pchq_theme_changed_dirty(),
+ * both -> load_theme_colors() + repaint), so a one-byte marker append
+ * delivers the new colours live to every window with no build and no
+ * restart. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+/* macOS leg (2026-08-22): no `setsid` binary on macOS — drop the prefix
+ * there (nohup+& already detaches for this pattern); Linux byte-identical. */
+#ifdef __APPLE__
+#define KTB_SETSID ""
+#else
+#define KTB_SETSID "setsid "
+#endif
+
+
+#define PATH_BUF 4096
+
+int main(int argc, char **argv) {
+    if (argc < 4) {
+        fprintf(stderr, "usage: apply_theme_op <house_root> <bg_hex> <fg_hex>\n");
+        return 1;
+    }
+    const char *house_root = argv[1];
+    const char *bg_hex = argv[2];
+    char fg_buf[16];
+    snprintf(fg_buf, sizeof(fg_buf), "%s", argv[3]);
+    const char *fg_hex = fg_buf;
+
+    /* REAL, NEW 2026-09-04 (live incident: bg==fg picked -> every
+     * window's text became invisible against its own background,
+     * house-wide, until the pdl was hand-edited to recover). Same
+     * primary/secondary can never be a usable theme - force fg to a
+     * real, high-contrast fallback instead of writing an unusable
+     * pair. #ffffff unless bg itself IS white, then #000000. */
+    { char a[16], b[16]; size_t i;
+      for (i = 0; bg_hex[i] && i < sizeof(a) - 1; i++) a[i] = (char)tolower((unsigned char)bg_hex[i]);
+      a[i] = '\0';
+      for (i = 0; fg_hex[i] && i < sizeof(b) - 1; i++) b[i] = (char)tolower((unsigned char)fg_hex[i]);
+      b[i] = '\0';
+      if (strcmp(a, b) == 0) {
+          snprintf(fg_buf, sizeof(fg_buf), "%s", strcmp(a, "#ffffff") == 0 ? "#000000" : "#ffffff");
+          fprintf(stderr, "apply_theme_op: bg and fg were the same (%s) - forced fg to %s so text stays visible\n",
+                  bg_hex, fg_hex);
+      }
+    }
+
+    char path[PATH_BUF], tmp[PATH_BUF];
+    snprintf(path, sizeof(path), "%s/#.desktop/livedesk_theme.pdl", house_root);
+    snprintf(tmp, sizeof(tmp), "%s/#.desktop/livedesk_theme.pdl.tmp", house_root);
+
+    char kept[8][256];
+    int n_kept = 0;
+    FILE *rf = fopen(path, "r");
+    if (rf) {
+        char line[256];
+        while (fgets(line, sizeof(line), rf) && n_kept < 8) {
+            if (strncmp(line, "COLOR", 5) != 0) continue;
+            char *p = strchr(line, '|');
+            if (!p) continue;
+            p++;
+            while (*p == ' ') p++;
+            char *end = strchr(p, '|');
+            if (!end) continue;
+            char key[16];
+            size_t klen = (size_t)(end - p);
+            while (klen && p[klen - 1] == ' ') klen--;
+            if (klen >= sizeof(key)) continue;
+            memcpy(key, p, klen); key[klen] = 0;
+            if (strcmp(key, "bg") == 0 || strcmp(key, "fg") == 0) continue;
+            line[strcspn(line, "\r\n")] = '\0';
+            snprintf(kept[n_kept], sizeof(kept[n_kept]), "%s", line);
+            n_kept++;
+        }
+        fclose(rf);
+    }
+
+    FILE *wf = fopen(tmp, "w");
+    if (!wf) { fprintf(stderr, "apply_theme_op: cannot write %s\n", tmp); return 1; }
+    fputs("SECTION      | KEY                | VALUE\n----------------------------------------\n", wf);
+    fprintf(wf, "COLOR        | bg                   | %s\n", bg_hex);
+    fprintf(wf, "COLOR        | fg                   | %s\n", fg_hex);
+    for (int i = 0; i < n_kept; i++) fprintf(wf, "%s\n", kept[i]);
+    fclose(wf);
+    remove(path);
+    rename(tmp, path);
+
+    /* Live delivery: bump the marker every running khtpm window already
+     * polls. No rebuild, no restart. */
+    char marker[PATH_BUF];
+    snprintf(marker, sizeof(marker), "%s/#.desktop/livedesk_theme_changed.txt", house_root);
+    FILE *mf = fopen(marker, "a");
+    if (mf) { fprintf(mf, "%s %s\n", bg_hex, fg_hex); fclose(mf); }
+    else fprintf(stderr, "apply_theme_op: WARN cannot append %s\n", marker);
+
+    fprintf(stderr, "apply_theme_op: wrote %s (bg=%s fg=%s), bumped theme-changed marker\n", path, bg_hex, fg_hex);
+    return 0;
+}

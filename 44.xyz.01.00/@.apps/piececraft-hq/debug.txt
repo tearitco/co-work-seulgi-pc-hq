@@ -1,0 +1,3 @@
+[06:13:15] PARSER: launch_module(system/prisc+x pal/new_game_module.pal) pid=-1
+[06:13:15] PARSER: forked module pid=3336987
+[06:13:15] PARSER: launch_module(system/prisc+x pal/new_game_module.pal) pid=3336987

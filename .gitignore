@@ -1,0 +1,9 @@
+# Runtime state created on first run / by playing the game - never
+# committed, matches the main house's own convention.
+44.xyz.01.00/#.desktop/*
+!44.xyz.01.00/#.desktop/.gitkeep
+**/module_parent.pid
+**/*.log
+44.xyz.01.00/@.apps/piececraft-hq/pieces/sessions/*
+44.xyz.01.00/&.widgits/board-viewer/pieces/sessions/*
+44.xyz.01.00/@.apps/piececraft-hq/pieces/system/engine.pid
